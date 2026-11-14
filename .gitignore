@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime data of the antivirus (never commit quarantined samples or caches)
+.aegis/
+*.aegis-quarantine
+aegis-data/
+antivirus/aegis/data/cache/
+antivirus/aegis/data/signatures_live.json
+
+# Simulator sandbox - generated test artifacts
+malware-sim/sandbox/
+lab-sandbox/
