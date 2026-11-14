@@ -461,3 +461,71 @@ def test_zombie_is_not_counted_as_a_surviving_process(stack):
     finally:
         parent.kill()
         parent.wait(timeout=10)
+
+
+# ------------------------------------------------- quarantine durability
+def test_index_write_failure_does_not_destroy_the_users_file(stack, tmp_path, monkeypatch):
+    """A full disk must not cost the user the file the antivirus was protecting.
+
+    quarantine() used to copy into the vault, unlink the original, and only
+    then persist the index. If that last write failed - ENOSPC is enough, and
+    an antivirus runs precisely when the disk is under pressure - the original
+    was gone, the vault held an obfuscated blob, and with no index entry
+    neither the window nor restore() could find it. The exception also escaped
+    quarantine() into the realtime response path.
+    """
+    quarantine = stack["quarantine"]
+    source = tmp_path / "praca" / "wazny.doc"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"TRESC UZYTKOWNIKA " * 200 + EICAR)
+    original = source.read_bytes()
+
+    def no_space(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(quarantine, "_save", no_space)
+
+    result = quarantine.quarantine(source, threat_name="EICAR.Test.File")
+
+    assert not result.ok, "zgłosił sukces mimo awarii zapisu indeksu"
+    assert "indeks" in result.detail.lower()
+    assert source.is_file(), "oryginał użytkownika zniknął"
+    assert source.read_bytes() == original, "treść oryginału uszkodzona"
+
+    monkeypatch.undo()
+    leftovers = [
+        p.name
+        for p in stack["cfg"].quarantine_dir.iterdir()
+        if p.name not in ("index.json", "vault.key")
+    ]
+    assert not leftovers, f"osierocone pliki w skarbcu: {leftovers}"
+    assert not Quarantine(stack["cfg"]).list(), "wpis został utrwalony mimo awarii"
+
+
+def test_unlink_failure_rolls_the_entry_back(stack, tmp_path, monkeypatch):
+    """A file must never be listed as quarantined while still sitting on disk."""
+    import aegis.core.quarantine as quarantine_mod
+
+    quarantine = stack["quarantine"]
+    source = tmp_path / "praca" / "zablokowany.doc"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"ZAWARTOSC " * 50 + EICAR)
+    original = source.read_bytes()
+
+    real_unlink = quarantine_mod.os.unlink
+
+    def refuse_source(target, *args, **kwargs):
+        if str(target) == str(source):
+            raise OSError(13, "Permission denied")
+        return real_unlink(target, *args, **kwargs)
+
+    monkeypatch.setattr(quarantine_mod.os, "unlink", refuse_source)
+
+    result = quarantine.quarantine(source, threat_name="EICAR.Test.File")
+
+    assert not result.ok
+    assert "oryginał" in result.detail.lower()
+    assert source.read_bytes() == original
+
+    monkeypatch.undo()
+    assert not Quarantine(stack["cfg"]).list(), "wpis został po nieudanej kwarantannie"
