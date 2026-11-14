@@ -486,8 +486,21 @@ class Responder:
                 continue
             except PermissionError:
                 denied.add(pid)
-        time.sleep(0.05)
-        survivors = {pid for pid in tree if self._process_exists(pid)}
+
+        # SIGKILL is asynchronous. The kernel may not have torn the process
+        # down yet, and a child whose parent we just killed has to be
+        # reparented to init and reaped before it stops being visible. A fixed
+        # sleep here reported "zakończono 0 z 3 procesów" for a kill that had
+        # in fact worked - on a loaded machine, which is exactly the moment
+        # ransomware is thrashing the disk and the report matters most.
+        # So wait on the condition instead, bounded, and skip pids we were
+        # never allowed to signal (they will never go away).
+        reap_deadline = time.monotonic() + min(max(grace, 0.5), 5.0)
+        while True:
+            survivors = {pid for pid in tree if self._process_exists(pid)}
+            if not survivors - denied or time.monotonic() >= reap_deadline:
+                break
+            time.sleep(0.02)
         killed = len([pid for pid in tree if pid not in survivors and pid not in denied])
         return killed, survivors, denied
 

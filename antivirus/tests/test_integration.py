@@ -328,3 +328,78 @@ def test_controller_boots_and_reports_a_dashboard(tmp_path):
         assert result is not None and result.threats, "controller scan found nothing"
     finally:
         controller.shutdown()
+
+
+# ------------------------------------------------- responder teardown race
+def test_slow_process_teardown_is_still_reported_as_success(stack, monkeypatch):
+    """A kill that worked must not be reported as a failure.
+
+    SIGKILL is asynchronous, and a child whose parent was just killed has to be
+    reparented to init and reaped before it stops being visible. The POSIX
+    fallback used to sleep a fixed 50 ms and then count survivors, so on a
+    loaded machine a successful kill reported "zakończono 0 z 3 procesów" -
+    telling the user the response had failed at precisely the moment it
+    mattered. This drives that timing deterministically instead of hoping to
+    reproduce it under load.
+    """
+    import aegis.realtime.responder as responder_mod
+
+    responder = stack["responder"]
+    monkeypatch.setattr(responder_mod, "HAVE_PSUTIL", False)
+    # No SIGTERM grace, so the run goes straight to SIGKILL and the assertion
+    # lands on the post-kill reap wait, which is the code under test.
+    stack["cfg"].kill_grace_sec = 0.0
+
+    tree = [50001, 50002, 50003]
+    monkeypatch.setattr(responder, "_collect_tree", lambda pid, forbidden=(): list(tree))
+    monkeypatch.setattr(responder, "_process_name", lambda pid: "sim_ransom")
+    monkeypatch.setattr(responder, "_own_ancestors", lambda: {1})
+
+    signalled: list[tuple[int, int]] = []
+
+    def fake_kill(pid, sig):
+        signalled.append((pid, sig))
+
+    monkeypatch.setattr(responder_mod.os, "kill", fake_kill)
+
+    # Each pid looks alive for several polls after being signalled, then dies -
+    # i.e. the kernel takes longer than one fixed sleep to tear it down.
+    polls: dict[int, int] = {pid: 0 for pid in tree}
+    linger = 8
+
+    def fake_exists(pid: int) -> bool:
+        polls[pid] = polls.get(pid, 0) + 1
+        return polls[pid] <= linger
+
+    monkeypatch.setattr(responder, "_process_exists", staticmethod(fake_exists))
+
+    result = responder.kill_process_tree(tree[0])
+
+    assert result.ok, result.detail
+    assert "zakończono 3 z 3" in result.detail, result.detail
+    assert {sig for _, sig in signalled} >= {responder_mod.signal.SIGKILL}
+
+
+def test_responder_does_not_wait_forever_on_an_unkillable_process(stack, monkeypatch):
+    """A pid we may not signal must not stall the response loop."""
+    import aegis.realtime.responder as responder_mod
+
+    responder = stack["responder"]
+    monkeypatch.setattr(responder_mod, "HAVE_PSUTIL", False)
+    monkeypatch.setattr(responder, "_collect_tree", lambda pid, forbidden=(): [60001])
+    monkeypatch.setattr(responder, "_process_name", lambda pid: "stubborn")
+    monkeypatch.setattr(responder, "_own_ancestors", lambda: {1})
+    monkeypatch.setattr(responder, "_process_exists", staticmethod(lambda pid: True))
+
+    def denied_kill(pid, sig):
+        raise PermissionError(pid)
+
+    monkeypatch.setattr(responder_mod.os, "kill", denied_kill)
+
+    started = time.monotonic()
+    result = responder.kill_process_tree(60001)
+    elapsed = time.monotonic() - started
+
+    assert not result.ok
+    assert "uprawnie" in result.detail.lower(), result.detail
+    assert elapsed < 2.0, f"czekał {elapsed:.1f}s na procesie bez uprawnień"
