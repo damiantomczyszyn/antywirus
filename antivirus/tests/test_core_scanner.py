@@ -366,6 +366,25 @@ def test_cancellation_mid_stream_stops_promptly(db, config, tmp_path, eicar_byte
     assert 5 <= seen < 400, f"skan nie zatrzymał się szybko (przeskanowano {seen})"
 
 
+def test_cancellation_stops_between_archive_members(db, config, tmp_path, eicar_bytes) -> None:
+    """A zip with thousands of members must not run to the end after a cancel."""
+    config.use_scan_cache = False
+    config.scan_threads = 1
+    config.archive_max_members = 20000
+    items = {f"m{n:05d}.txt": b"wypelniacz %d" % n for n in range(4000)}
+    items["zzz-eicar.com"] = eicar_bytes
+    target = tmp_path / "ogromne.zip"
+    target.write_bytes(make_zip(items))
+
+    token = CancellationToken()
+    token.cancel()
+    scanner = Scanner(db, config)
+    started = time.monotonic()
+    verdict = scanner._scan_one(target, token=token)
+    assert time.monotonic() - started < 2.0
+    assert verdict.severity is Severity.CLEAN, "rekurencja nie zatrzymała się na tokenie"
+
+
 def test_cancellation_is_reported_on_the_bus(scanner: Scanner, samples, bus) -> None:
     token = CancellationToken()
     token.cancel()

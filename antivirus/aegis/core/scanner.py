@@ -179,6 +179,21 @@ class Scanner:
     # ------------------------------------------------------------------
     def scan_file(self, path: str | os.PathLike[str], *, data: bytes | None = None) -> FileVerdict:
         """Analyse one file.  Never raises: problems land in the verdict."""
+        return self._scan_one(path, data=data, token=None)
+
+    def _scan_one(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        data: bytes | None = None,
+        token: CancellationToken | None = None,
+    ) -> FileVerdict:
+        """:meth:`scan_file` plus the cancellation token of the running job.
+
+        The public signature is fixed by the integration contract, but archive
+        recursion has to be able to stop between members, so the token travels
+        on this private path instead.
+        """
         started = time.perf_counter()
         path_obj = Path(path)
         verdict = FileVerdict(path=str(path_obj))
@@ -220,7 +235,9 @@ class Scanner:
         verdict.size = hashes.size
         verdict.sha256 = hashes.sha256
         verdict.md5 = hashes.md5
-        verdict.detections = self._analyse(label=str(path_obj), data=data, hashes=hashes)
+        verdict.detections = self._analyse(
+            label=str(path_obj), data=data, hashes=hashes, token=token
+        )
         apply_to_file_verdict(verdict)
         verdict.duration_ms = (time.perf_counter() - started) * 1000
 
@@ -243,10 +260,10 @@ class Scanner:
         self._announce(verdict)
         return verdict
 
-    def _safe_scan_file(self, path: Path) -> FileVerdict:
+    def _safe_scan_file(self, path: Path, token: CancellationToken | None = None) -> FileVerdict:
         """Pool entry point: an unexpected bug must not abort the whole scan."""
         try:
-            return self.scan_file(path)
+            return self._scan_one(path, token=token)
         except Exception as exc:  # noqa: BLE001
             return FileVerdict(
                 path=str(path),
@@ -623,7 +640,7 @@ class Scanner:
                     if token is not None and token.cancelled:
                         cancelled = True
                         break
-                    verdict = self._safe_scan_file(path)
+                    verdict = self._safe_scan_file(path, token)
                     self._account(stats, verdict)
                     self._maybe_progress(stats, verdict.path)
                     yield verdict
@@ -675,7 +692,7 @@ class Scanner:
                         except StopIteration:
                             exhausted = True
                             break
-                        pending.add(pool.submit(self._safe_scan_file, path))
+                        pending.add(pool.submit(self._safe_scan_file, path, token))
                     if not pending:
                         break
                     done, pending = futures.wait(
@@ -810,30 +827,14 @@ class Scanner:
 # --------------------------------------------------------------------------
 # cache (de)serialisation
 # --------------------------------------------------------------------------
-def _detection_from_dict(data: dict[str, Any]) -> Detection:
-    indicator = data.get("indicator")
-    return Detection(
-        layer=DetectionLayer(data["layer"]),
-        rule=data["rule"],
-        threat_name=data.get("threat_name", ""),
-        score=float(data.get("score", 0.0)),
-        confidence=float(data.get("confidence", 1.0)),
-        detail=data.get("detail", ""),
-        path=data.get("path"),
-        pid=data.get("pid"),
-        indicator=Indicator.from_dict(indicator) if isinstance(indicator, dict) else None,
-        timestamp=float(data.get("timestamp", 0.0) or time.time()),
-    )
-
-
 def _verdict_from_cache(path: str, record: dict[str, Any]) -> FileVerdict:
-    stored = record["verdict"]
-    verdict = FileVerdict(
-        path=path,
-        size=int(stored.get("size", 0)),
-        sha256=stored.get("sha256", ""),
-        md5=stored.get("md5", ""),
-        detections=[_detection_from_dict(d) for d in stored.get("detections", [])],
-        scanned_at=float(stored.get("scanned_at", 0.0) or time.time()),
-    )
+    """Rebuild a verdict stored by :meth:`Scanner._cache_put`.
+
+    Deserialisation lives in the model (``FileVerdict.from_dict``), not here -
+    and the score is recomputed from the detections rather than trusted, so a
+    cache written before a fusion change cannot resurrect a stale severity.
+    """
+    verdict = FileVerdict.from_dict(record["verdict"])
+    verdict.path = path
+    verdict.duration_ms = 0.0
     return apply_to_file_verdict(verdict)
