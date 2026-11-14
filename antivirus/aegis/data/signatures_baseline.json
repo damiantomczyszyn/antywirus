@@ -1,0 +1,259 @@
+{
+  "version": "2026.11.14.1",
+  "generated_at": "2026-11-14T00:00:00Z",
+  "indicators": [
+    {
+      "kind": "sha256",
+      "value": "275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f",
+      "name": "EICAR.Test.File",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "eicar",
+        "test-file",
+        "baseline"
+      ],
+      "description": "Standardowy ciąg testowy EICAR - całkowicie nieszkodliwy plik używany w całej branży do sprawdzania, czy antywirus działa (skrót sha256).",
+      "added_at": 0.0
+    },
+    {
+      "kind": "sha1",
+      "value": "3395856ce81f2b7382dee72602f798b642f14140",
+      "name": "EICAR.Test.File",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "eicar",
+        "test-file",
+        "baseline"
+      ],
+      "description": "Standardowy ciąg testowy EICAR - całkowicie nieszkodliwy plik używany w całej branży do sprawdzania, czy antywirus działa (skrót sha1).",
+      "added_at": 0.0
+    },
+    {
+      "kind": "md5",
+      "value": "44d88612fea8a8f36de82e1278abb02f",
+      "name": "EICAR.Test.File",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "eicar",
+        "test-file",
+        "baseline"
+      ],
+      "description": "Standardowy ciąg testowy EICAR - całkowicie nieszkodliwy plik używany w całej branży do sprawdzania, czy antywirus działa (skrót md5).",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "58354f2150254041505b345c505a58353428505e2937434329377d2445494341522d5354414e444152442d414e544956495255532d544553542d46494c452124482b482a",
+      "name": "EICAR.Test.File",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "eicar",
+        "test-file",
+        "baseline",
+        "content"
+      ],
+      "description": "Treść ciągu testowego EICAR wykryta w zawartości pliku - łapie go także wtedy, gdy jest osadzony w archiwum lub dopisany do innego pliku.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "41454749532d53494d2d5041594c4f41442d4d41524b4552",
+      "name": "Sim.Payload.Marker",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "simulator",
+        "baseline",
+        "payload"
+      ],
+      "description": "Znacznik próbki symulatora Aegis (ogólny znacznik próbki symulatora). Próbka jest atrapą - nie wykonuje żadnych szkodliwych działań.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "41454749532d53494d2d52414e534f4d2d4e4f5445",
+      "name": "Sim.Ransom.Marker",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "simulator",
+        "baseline",
+        "ransom"
+      ],
+      "description": "Znacznik próbki symulatora Aegis (symulowana notatka okupu). Próbka jest atrapą - nie wykonuje żadnych szkodliwych działań.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "41454749532d53494d2d424541434f4e",
+      "name": "Sim.Beacon.Marker",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "simulator",
+        "baseline",
+        "beacon"
+      ],
+      "description": "Znacznik próbki symulatora Aegis (symulowana komunikacja z serwerem C2). Próbka jest atrapą - nie wykonuje żadnych szkodliwych działań.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "41454749532d53494d2d50455253495354454e4345",
+      "name": "Sim.Persistence.Marker",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "simulator",
+        "baseline",
+        "persistence"
+      ],
+      "description": "Znacznik próbki symulatora Aegis (symulowane utrwalanie w autostarcie). Próbka jest atrapą - nie wykonuje żadnych szkodliwych działań.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "41454749532d53494d2d455846494c",
+      "name": "Sim.Exfil.Marker",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "simulator",
+        "baseline",
+        "exfil"
+      ],
+      "description": "Znacznik próbki symulatora Aegis (symulowana eksfiltracja danych). Próbka jest atrapą - nie wykonuje żadnych szkodliwych działań.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "41454749532d53494d2d44524f50504552",
+      "name": "Sim.Dropper.Marker",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "simulator",
+        "baseline",
+        "dropper"
+      ],
+      "description": "Znacznik próbki symulatora Aegis (symulowany dropper). Próbka jest atrapą - nie wykonuje żadnych szkodliwych działań.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "76737361646d696e2064656c65746520736861646f7773",
+      "name": "Generic.Script.ShadowCopyWipe",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "script",
+        "generic",
+        "baseline"
+      ],
+      "description": "Usuwanie kopii w cieniu (Volume Shadow Copy) - typowe dla ransomware przed szyfrowaniem plików.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "776261646d696e2064656c65746520636174616c6f67",
+      "name": "Generic.Script.BackupWipe",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "script",
+        "generic",
+        "baseline"
+      ],
+      "description": "Niszczenie katalogu kopii zapasowych systemu Windows - typowe dla ransomware.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "706f7765727368656c6c202d6e6f70202d772068696464656e202d656e6320",
+      "name": "Generic.Script.HiddenEncodedPowerShell",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "script",
+        "generic",
+        "baseline"
+      ],
+      "description": "Ukryty PowerShell z poleceniem zakodowanym w Base64 - klasyczny sposób uruchamiania złośliwego kodu bez okna.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "2d57696e646f775374796c652048696464656e202d456e636f646564436f6d6d616e6420",
+      "name": "Generic.Script.HiddenEncodedPowerShell",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "script",
+        "generic",
+        "baseline"
+      ],
+      "description": "Ukryte okno PowerShell z zakodowanym poleceniem - wariant pisany pełnymi nazwami parametrów.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "3e26202f6465762f7463702f",
+      "name": "Generic.Script.ReverseShell",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "script",
+        "generic",
+        "baseline"
+      ],
+      "description": "Odwrotna powłoka w Bash (przekierowanie deskryptorów do /dev/tcp) - daje atakującemu zdalny dostęp do powłoki.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "494558284e65772d4f626a656374204e65742e576562436c69656e74292e446f776e6c6f6164537472696e6728",
+      "name": "Generic.Script.DownloadCradle",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "script",
+        "generic",
+        "baseline"
+      ],
+      "description": "Pobranie i natychmiastowe uruchomienie skryptu z sieci (download cradle) - typowy pierwszy etap infekcji.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "49455820284e65772d4f626a656374204e65742e576562436c69656e74292e446f776e6c6f6164537472696e6728",
+      "name": "Generic.Script.DownloadCradle",
+      "severity": "high",
+      "source": "builtin",
+      "tags": [
+        "script",
+        "generic",
+        "baseline"
+      ],
+      "description": "Pobranie i natychmiastowe uruchomienie skryptu z sieci (download cradle), wariant ze spacją.",
+      "added_at": 0.0
+    },
+    {
+      "kind": "pattern",
+      "value": "476574537472696e67285b53797374656d2e436f6e766572745d3a3a46726f6d426173653634537472696e6728",
+      "name": "Generic.Script.Base64Payload",
+      "severity": "medium",
+      "source": "builtin",
+      "tags": [
+        "script",
+        "generic",
+        "baseline"
+      ],
+      "description": "Dekodowanie ładunku z Base64 w pamięci - w połączeniu z IEX oznacza bezplikowe uruchomienie kodu.",
+      "added_at": 0.0
+    }
+  ]
+}

@@ -99,13 +99,23 @@ class Config:
     procmon_interval_sec: float = 2.0
 
     # --- threat intel ---
+    # Only feeds that actually serve data anonymously, verified 2026-11-14.
+    # Deliberately NOT here:
+    #   malwarebazaar_recent / urlhaus_online / threatfox_iocs - abuse.ch
+    #     retired its anonymous bulk exports (HTTP 410 Gone); the replacements
+    #     live on *-api.abuse.ch and need a free Auth-Key, so enabling them by
+    #     default would only produce warnings on a fresh install.
+    #   sslbl_ipblocklist - upstream deprecated it on 2025-01-03; it still
+    #     returns 200 but the body is a header and zero addresses.
+    #   sslbl_certs - TLS certificate fingerprints, not file hashes; they can
+    #     never match file content, so they would just pollute the hash space.
+    #   clamav_daily - large download, and Cloudflare blocks some egress.
+    # Add any of them in Settings (and a key via feed_api_keys) to turn on.
     feeds_enabled: list[str] = field(
         default_factory=lambda: [
             "builtin",
-            "malwarebazaar_recent",
-            "urlhaus_online",
             "feodo_ipblocklist",
-            "sslbl_ipblocklist",
+            "feodo_aggressive",
         ]
     )
     feed_api_keys: dict[str, str] = field(default_factory=dict)
