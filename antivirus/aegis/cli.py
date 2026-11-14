@@ -26,7 +26,7 @@ from . import __version__
 from .config import Config
 from .engine.verdict import explain
 from .events import Event, EventType
-from .gui.controller import SEVERITY_LABELS_PL, AegisController
+from .gui.controller import LAYER_LABELS_PL, SEVERITY_LABELS_PL, AegisController
 from .models import FileVerdict, Severity
 
 __all__ = ["main", "build_parser"]
@@ -96,6 +96,19 @@ def _table(headers: Sequence[str], rows: Sequence[Sequence[Any]], indent: str = 
             indent + "  ".join(value.ljust(widths[i]) for i, value in enumerate(row)).rstrip()
         )
     return "\n".join(lines)
+
+
+def _fmt_size(size: int | float | None) -> str:
+    """Human readable byte count (the GUI uses the same wording)."""
+    try:
+        value = float(size or 0)
+    except (TypeError, ValueError):
+        return "0 B"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
 
 
 def _fmt_time(value: float | None) -> str:
@@ -236,9 +249,19 @@ def build_parser() -> argparse.ArgumentParser:
 # Controller construction
 # --------------------------------------------------------------------------
 def _build_config(args: argparse.Namespace) -> Config:
-    """Never touch the real ``~/.aegis`` when ``--data-dir`` was given."""
+    """Load settings, honouring ``--data-dir``.
+
+    With the flag we read ``<katalog>/config.json`` when it exists but keep the
+    directory the user asked for, so the real ``~/.aegis`` is never touched.
+    """
     if getattr(args, "data_dir", None):
-        return Config(data_dir=Path(args.data_dir).expanduser())
+        root = Path(args.data_dir).expanduser()
+        candidate = root / "config.json"
+        if candidate.is_file():
+            config = Config.load(candidate)
+            config.data_dir = root
+            return config
+        return Config(data_dir=root)
     return Config.load()
 
 
@@ -344,7 +367,7 @@ def _print_scan_summary(result: Any, threats: Sequence[FileVerdict], actions: Se
             [
                 ["przeskanowane pliki", int(getattr(stats, "files_scanned", 0) or 0)],
                 ["pominięte pliki", int(getattr(stats, "files_skipped", 0) or 0)],
-                ["przeczytane dane", f"{int(getattr(stats, 'bytes_scanned', 0) or 0) / 1048576:.1f} MB"],
+                ["przeczytane dane", _fmt_size(getattr(stats, "bytes_scanned", 0))],
                 ["wykryte zagrożenia", len(threats)],
                 ["błędy", int(getattr(stats, "errors", 0) or 0)],
                 ["czas", f"{float(getattr(stats, 'duration', 0.0) or 0.0):.2f} s"],
@@ -361,12 +384,12 @@ def _print_scan_summary(result: Any, threats: Sequence[FileVerdict], actions: Se
     _out(f"Wykryte zagrożenia: {len(threats)}")
     rows = []
     for verdict in threats:
-        layers = sorted({d.layer.value for d in verdict.detections})
+        layers = sorted({d.layer for d in verdict.detections}, key=lambda layer: layer.value)
         rows.append(
             [
                 verdict.path,
                 verdict.threat_name or "nieznane",
-                "+".join(layers) or "-",
+                "+".join(LAYER_LABELS_PL.get(layer, layer.value) for layer in layers) or "-",
                 f"{verdict.score:.1f}",
                 _severity_label(verdict.severity),
             ]

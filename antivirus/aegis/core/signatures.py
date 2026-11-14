@@ -35,6 +35,7 @@ from ..models import Indicator, IndicatorKind, Severity
 __all__ = [
     "SignatureDB",
     "compile_pattern",
+    "pattern_literal",
     "PatternError",
     "PATTERN_CHUNK",
     "MIN_PATTERN_SPECIFICITY",
@@ -48,9 +49,9 @@ PATTERN_CHUNK = 200
 #: pathological one-byte pattern over a 64 MiB file cannot stall a scan.
 _MAX_MATCH_ITERATIONS = 4096
 
-#: How many match offsets per chunk get re-probed for patterns shadowed by a
-#: longer one at the same offset.  Real samples trip a handful of patterns, so
-#: this is generous; it only exists so a pattern matching everywhere cannot
+#: How many prefilter hits per chunk get fully identified (every remaining
+#: pattern probed at that offset).  Real samples trip a handful of patterns, so
+#: this is generous; it only exists so a pattern that matches everywhere cannot
 #: turn into quadratic work.
 _MAX_SHADOW_PROBES = 64
 
@@ -85,23 +86,43 @@ class PatternError(ValueError):
 
 
 class _PatternChunk:
-    """One compiled alternation plus the pieces it was built from."""
+    """A prefilter regex for a group of patterns, plus how to identify its hits.
 
-    __slots__ = ("regex", "indicators", "sources", "_singles")
+    The prefilter contains **no capture groups on purpose**.  A group (or a
+    lookahead) inside a branch makes CPython give up on its first-byte
+    prefilter and fall back to trying every alternative at every offset: with
+    200 patterns that is a 20 *second* scan of one megabyte instead of half a
+    millisecond.  Measured, not guessed - see
+    ``test_match_bytes_stays_fast_with_many_patterns``.
+
+    Which pattern matched is therefore worked out after the fact: from the
+    matched bytes for wildcard-free patterns (a dict lookup), or by probing the
+    few remaining patterns at that offset.
+    """
+
+    __slots__ = ("regex", "indicators", "sources", "literals", "literal_map", "_singles")
 
     def __init__(
-        self, regex: "re.Pattern[bytes]", indicators: list[Indicator], sources: list[bytes]
+        self,
+        regex: "re.Pattern[bytes]",
+        indicators: list[Indicator],
+        sources: list[bytes],
+        literals: list[bytes | None],
     ) -> None:
         self.regex = regex
         self.indicators = indicators
         self.sources = sources
+        self.literals = literals
+        self.literal_map: dict[bytes, int] = {
+            literal: index for index, literal in enumerate(literals) if literal
+        }
         self._singles: dict[int, "re.Pattern[bytes] | None"] = {}
 
     def single(self, index: int) -> "re.Pattern[bytes] | None":
         """Regex for one member pattern, compiled on first use.
 
-        Only needed once something already matched, which is rare, so the cost
-        of the big alternation is never paid twice on clean files.
+        Only needed once something already matched, which is rare, so clean
+        files never pay for it.
         """
         if index not in self._singles:
             try:
@@ -109,6 +130,28 @@ class _PatternChunk:
             except re.error:  # pragma: no cover
                 self._singles[index] = None
         return self._singles[index]
+
+    def probe(
+        self, data: bytes, offset: int, candidates: Iterable[int], skip: int | None
+    ) -> list[int]:
+        """Which of *candidates* also match at *offset*.
+
+        The prefilter reports one alternative per offset, so without this a
+        pattern sharing a prefix with a longer one would stay invisible.
+        """
+        found: list[int] = []
+        for index in sorted(candidates):
+            if index == skip:
+                continue
+            literal = self.literals[index]
+            if literal is not None:
+                if data.startswith(literal, offset):
+                    found.append(index)
+                continue
+            single = self.single(index)
+            if single is not None and single.match(data, offset):
+                found.append(index)
+        return found
 
 
 def _escape_byte(value: int) -> bytes:
@@ -132,7 +175,7 @@ def compile_pattern(value: str) -> bytes:
     if not text:
         raise PatternError("pusty wzorzec")
     if len(text) % 2:
-        raise PatternError(f"nieparzysta liczba znakow hex: {value!r}")
+        raise PatternError(f"nieparzysta liczba znaków hex: {value!r}")
     if not re.fullmatch(r"[0-9a-f?]+", text):
         raise PatternError(f"niedozwolone znaki we wzorcu: {value!r}")
 
@@ -156,6 +199,21 @@ def compile_pattern(value: str) -> bytes:
     if specificity < MIN_PATTERN_SPECIFICITY:
         raise PatternError(f"wzorzec zbyt ogólny: {value!r}")
     return b"".join(out)
+
+
+def pattern_literal(value: str) -> bytes | None:
+    """Raw bytes of a wildcard-free pattern, else ``None``.
+
+    Used to identify which alternative of a prefilter regex matched without
+    paying for capture groups.
+    """
+    text = re.sub(r"[\s:_-]", "", value).lower()
+    if not text or "?" in text or len(text) % 2:
+        return None
+    try:
+        return bytes.fromhex(text)
+    except ValueError:
+        return None
 
 
 def _row_to_indicator(row: Sequence[Any]) -> Indicator:
@@ -481,32 +539,43 @@ class SignatureDB:
         if cache is not None:
             return cache
 
-        items: list[tuple[bytes, Indicator]] = []
+        items: list[tuple[bytes, bytes | None, Indicator]] = []
         for ind in self.iter_indicators(IndicatorKind.PATTERN):
             try:
-                items.append((compile_pattern(ind.value), ind))
+                items.append((compile_pattern(ind.value), pattern_literal(ind.value), ind))
             except PatternError:
                 continue  # a malformed feed row must not break scanning
-        items.sort(key=lambda it: len(it[1].value), reverse=True)
+        # Longest first: the most specific pattern should win at a given offset.
+        items.sort(key=lambda it: len(it[2].value), reverse=True)
+
+        # A pattern starting with "??" compiles to a leading ".", which also
+        # defeats the first-byte prefilter, so those live in their own chunks
+        # and cannot slow the (overwhelming) majority down.
+        groups = (
+            [it for it in items if not it[0].startswith(b".")],
+            [it for it in items if it[0].startswith(b".")],
+        )
 
         compiled: list[_PatternChunk] = []
-        for start in range(0, len(items), PATTERN_CHUNK):
-            chunk = items[start : start + PATTERN_CHUNK]
-            source = b"(?:" + b"|".join(b"(?=(" + src + b"))" for src, _ in chunk) + b")"
-            sources = [src for src, _ in chunk]
-            indicators = [ind for _, ind in chunk]
-            try:
-                regex = re.compile(source, re.DOTALL)
-            except re.error:  # pragma: no cover - fall back to one regex per pattern
-                for src, ind in chunk:
-                    try:
-                        compiled.append(
-                            _PatternChunk(re.compile(src, re.DOTALL), [ind], [src])
-                        )
-                    except re.error:
-                        pass
-                continue
-            compiled.append(_PatternChunk(regex, indicators, sources))
+        for group in groups:
+            for start in range(0, len(group), PATTERN_CHUNK):
+                chunk = group[start : start + PATTERN_CHUNK]
+                source = b"(?:" + b"|".join(b"(?:" + src + b")" for src, _, _ in chunk) + b")"
+                sources = [src for src, _, _ in chunk]
+                literals = [lit for _, lit, _ in chunk]
+                indicators = [ind for _, _, ind in chunk]
+                try:
+                    regex = re.compile(source, re.DOTALL)
+                except re.error:  # pragma: no cover - one regex per pattern instead
+                    for src, lit, ind in chunk:
+                        try:
+                            compiled.append(
+                                _PatternChunk(re.compile(src, re.DOTALL), [ind], [src], [lit])
+                            )
+                        except re.error:
+                            pass
+                    continue
+                compiled.append(_PatternChunk(regex, indicators, sources, literals))
 
         with self._lock:
             self._pattern_cache = compiled
@@ -534,27 +603,39 @@ class SignatureDB:
 
         for chunk in self._compiled_patterns():
             remaining = set(range(len(chunk.indicators)))
-            shadow_probes = _MAX_SHADOW_PROBES
-            for iteration, match in enumerate(chunk.regex.finditer(data)):
-                if iteration >= _MAX_MATCH_ITERATIONS:
+            probes_left = _MAX_SHADOW_PROBES
+            position = 0
+            for _ in range(_MAX_MATCH_ITERATIONS):
+                match = chunk.regex.search(data, position)
+                if match is None:
                     break
                 offset = match.start()
-                index = (match.lastindex or 1) - 1
-                if index in remaining:
-                    remaining.discard(index)
-                    if record(chunk.indicators[index], offset):
+                # Continue one byte further, not past the match, so patterns
+                # overlapping this one are still found.
+                position = offset + 1
+
+                here: list[int] = []
+                index = chunk.literal_map.get(match.group(0))
+                if index is not None and index in remaining:
+                    here.append(index)
+                if remaining and probes_left > 0:
+                    probes_left -= 1
+                    here.extend(chunk.probe(data, offset, remaining, skip=index))
+                elif index is None:
+                    # Out of probe budget and the hit is a wildcard pattern:
+                    # identify it with a single probe of the wildcard patterns.
+                    here.extend(
+                        chunk.probe(
+                            data,
+                            offset,
+                            [i for i in remaining if chunk.literals[i] is None],
+                            skip=None,
+                        )[:1]
+                    )
+                for found in here:
+                    remaining.discard(found)
+                    if record(chunk.indicators[found], offset):
                         return hits
-                # The alternation only reports its first successful branch at a
-                # given offset, so any other pattern that also starts here would
-                # be shadowed.  Re-probe the rest of the chunk at this offset.
-                if remaining and shadow_probes > 0:
-                    shadow_probes -= 1
-                    for other in sorted(remaining):
-                        single = chunk.single(other)
-                        if single is not None and single.match(data, offset):
-                            remaining.discard(other)
-                            if record(chunk.indicators[other], offset):
-                                return hits
                 if not remaining:
                     break
         return hits

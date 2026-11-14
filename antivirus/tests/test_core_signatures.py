@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import threading
 
@@ -276,6 +277,56 @@ def test_many_patterns_are_chunked_and_still_match(db: SignatureDB) -> None:
     for probe in (0, PATTERN_CHUNK, count - 1):
         hits = db.match_bytes(b"pad" + f"SIG{probe:04d}X".encode() + b"pad", limit=4)
         assert [i.name for i, _ in hits] == [f"S{probe}"]
+
+
+def test_match_bytes_stays_fast_with_many_patterns(db: SignatureDB) -> None:
+    """Performance regression guard.
+
+    An early version wrapped every alternative in a capture group, which makes
+    CPython drop its first-byte prefilter: the scan below took over three
+    *minutes* instead of a fraction of a second.
+    """
+    import time
+
+    db.add_many(
+        [
+            ind(IndicatorKind.PATTERN, Indicator.pattern_from_text(f"WZORZEC-{n:05d}-KONIEC"),
+                name=f"W{n}")
+            for n in range(500)
+        ]
+    )
+    blob = os.urandom(1024 * 1024)
+    db.match_bytes(blob)                      # pay the one-off compilation
+    started = time.perf_counter()
+    assert db.match_bytes(blob) == []
+    elapsed = time.perf_counter() - started
+    assert elapsed < 2.0, f"skan 1 MiB z 500 wzorcami zajął {elapsed:.2f}s"
+
+    needle = b"x" * 5000 + b"WZORZEC-00499-KONIEC" + b"y" * 5000
+    assert [i.name for i, _ in db.match_bytes(needle)] == ["W499"]
+
+
+def test_wildcard_leading_pattern_still_matches(db: SignatureDB) -> None:
+    """Patterns starting with ?? live in their own chunk - they must still work."""
+    db.add_many(
+        [ind(IndicatorKind.PATTERN, "????4a4b4c", name="Wild.Lead")]
+        + [ind(IndicatorKind.PATTERN, Indicator.pattern_from_text(f"LIT{n:03d}"), name=f"L{n}")
+           for n in range(20)]
+    )
+    hits = db.match_bytes(b"\x00\x11\x22JKL" + b"LIT007")
+    assert {i.name for i, _ in hits} == {"Wild.Lead", "L7"}
+
+
+def test_a_pattern_matching_everywhere_does_not_stall(db: SignatureDB) -> None:
+    import time
+
+    db.add(ind(IndicatorKind.PATTERN, "0000", name="Zeros"))
+    db.add(ind(IndicatorKind.PATTERN, Indicator.pattern_from_text("IGLA"), name="Needle"))
+    data = b"\x00" * (2 * 1024 * 1024) + b"IGLA"
+    started = time.perf_counter()
+    names = {i.name for i, _ in db.match_bytes(data, limit=8)}
+    assert time.perf_counter() - started < 3.0
+    assert "Zeros" in names
 
 
 # --------------------------------------------------------------------------

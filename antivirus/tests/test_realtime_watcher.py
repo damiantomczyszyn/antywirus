@@ -22,6 +22,7 @@ from aegis.models import (
     SCORE_HASH_MATCH,
     ActionKind,
     ActionResult,
+    BehaviorEvent,
     BehaviorKind,
     Detection,
     DetectionLayer,
@@ -193,7 +194,7 @@ def test_watchdog_request_without_the_package_degrades(config, bus, monkeypatch)
 # --------------------------------------------------------------------------
 def test_new_threat_is_scanned_and_quarantined(harness):
     monitor = harness.monitor
-    monitor.start()
+    monitor.start(background=False)
     path = harness.write("evil.com", EICAR)
 
     drain_until(monitor, lambda: path in harness.scanner.scanned)
@@ -212,7 +213,7 @@ def test_new_threat_is_scanned_and_quarantined(harness):
 def test_every_change_also_becomes_a_behaviour_event(harness):
     """The second half of hybrid analysis: the same change feeds the rules."""
     monitor = harness.monitor
-    monitor.start()
+    monitor.start(background=False)
     path = harness.write("notes.txt", b"zwykly tekst" * 40)
 
     drain_until(monitor, lambda: path in harness.scanner.scanned)
@@ -226,7 +227,7 @@ def test_every_change_also_becomes_a_behaviour_event(harness):
 
 def test_entropy_is_computed_from_a_bounded_prefix(harness):
     monitor = harness.monitor
-    monitor.start()
+    monitor.start(background=False)
     big = os.urandom(ENTROPY_PREFIX_BYTES * 3)
     path = harness.write("big.bin", big)
 
@@ -242,7 +243,7 @@ def test_entropy_is_computed_from_a_bounded_prefix(harness):
 
 def test_deleted_file_becomes_a_delete_event(harness):
     monitor = harness.monitor
-    monitor.start()
+    monitor.start(background=False)
     path = harness.write("temp.txt", b"abc")
     drain_until(monitor, lambda: path in harness.scanner.scanned)
     os.remove(path)
@@ -284,7 +285,7 @@ def test_quarantining_a_file_does_not_retrigger_a_scan(tmp_path, bus):
     harness = Harness(config, bus, "polling")
     monitor = harness.monitor
     try:
-        monitor.start()
+        monitor.start(background=False)
         path = harness.write("evil.com", EICAR)
         assert monitor.drain_once() == 1
         assert harness.quarantine.calls == [path]
@@ -292,7 +293,9 @@ def test_quarantining_a_file_does_not_retrigger_a_scan(tmp_path, bus):
         vault_files = list(config.quarantine_dir.iterdir())
         assert vault_files, "atrapa kwarantanny nie przeniosła pliku do skarbca"
 
-        # Drain again and again: the quarantined copy must never come back.
+        # The original path vanished, which is one legitimate FILE_DELETE
+        # observation - and then nothing, for ever.
+        assert monitor.drain_once() <= 1
         for _ in range(5):
             assert monitor.drain_once() == 0
 
@@ -330,7 +333,7 @@ def test_start_without_any_usable_path_does_not_run(config, bus, tmp_path):
 
 def test_excluded_directory_names_are_skipped(harness):
     monitor = harness.monitor
-    monitor.start()
+    monitor.start(background=False)
     path = harness.write("__pycache__/mod.pyc", b"skompilowane")
     assert monitor.submit(path, BehaviorKind.FILE_CREATE) is False
     assert monitor.status()["skipped_excluded"] >= 1
@@ -412,7 +415,7 @@ def test_threat_below_min_severity_is_not_quarantined(config, bus):
     harness = Harness(config, bus, "polling", scanner=FakeScanner(severity_score=20.0))
     monitor = harness.monitor
     try:
-        monitor.start()
+        monitor.start(background=False)
         path = harness.write("evil.com", EICAR)
         assert monitor.drain_once() == 1
         assert monitor.status()["threats"] == 1
@@ -427,7 +430,7 @@ def test_oversized_files_are_not_scanned_but_still_observed(config, bus):
     harness = Harness(config, bus, "polling")
     monitor = harness.monitor
     try:
-        monitor.start()
+        monitor.start(background=False)
         path = harness.write("huge.bin", b"x" * 1024)
         assert monitor.drain_once() == 1
         assert harness.scanner.scanned == []
@@ -442,7 +445,7 @@ def test_a_crashing_scanner_does_not_stop_the_monitor(config, bus):
     harness = Harness(config, bus, "polling", scanner=FakeScanner(boom=True))
     monitor = harness.monitor
     try:
-        monitor.start()
+        monitor.start(background=False)
         harness.write("whatever.bin", b"abc")
         assert monitor.drain_once() == 1
         assert monitor.status()["errors"] >= 1
@@ -456,7 +459,7 @@ def test_monitor_without_behaviour_or_responder_still_scans(config, bus):
     scanner = FakeScanner()
     monitor = RealtimeMonitor(scanner, config, bus, backend="polling")
     try:
-        monitor.start()
+        monitor.start(background=False)
         path = os.path.join(config.realtime_paths[0], "evil.com")
         with open(path, "wb") as fh:
             fh.write(EICAR)
@@ -471,9 +474,9 @@ def test_monitor_without_behaviour_or_responder_still_scans(config, bus):
 
 def test_lifecycle_is_idempotent(harness):
     monitor = harness.monitor
-    monitor.start()
+    monitor.start()                      # with the background drain thread
     assert monitor.is_running
-    monitor.start()
+    monitor.start(background=False)
     assert monitor.is_running
     monitor.stop(timeout=5)
     assert not monitor.is_running
@@ -499,7 +502,7 @@ def test_simulated_ransomware_wave_escalates_to_a_process_action(config, bus):
     harness = Harness(config, bus, "polling")
     monitor = harness.monitor
     try:
-        monitor.start()
+        monitor.start(background=False)
         victims = [harness.write(f"docs/raport{i}.txt", b"A" * 20_000) for i in range(40)]
         monitor.drain_once()                   # baseline: the documents are known
 
@@ -544,7 +547,7 @@ def test_a_benign_bulk_write_wave_does_not_reach_the_action_threshold(config, bu
     harness = Harness(config, bus, "polling")
     monitor = harness.monitor
     try:
-        monitor.start()
+        monitor.start(background=False)
         for i in range(120):
             harness.write(f"build/obj{i}.o", b"ELF-ish object file\n" * 50)
         monitor.drain_once()
@@ -561,6 +564,51 @@ def test_a_benign_bulk_write_wave_does_not_reach_the_action_threshold(config, bu
             if e.payload.get("action") == "kill_process"
         ]
         assert kills == []
+    finally:
+        harness.stop()
+
+
+def test_process_evidence_alone_still_reaches_the_responder(config, bus):
+    """No file changed: the evidence came from the process monitor."""
+    harness = Harness(config, bus, "polling")
+    monitor = harness.monitor
+    try:
+        monitor.start(background=False)
+        assert monitor.drain_once() == 0
+
+        # What ProcessMonitor would feed in: a shadow-copy destruction command,
+        # plus that actor's own write burst.
+        harness.behavior.observe(
+            BehaviorEvent(
+                kind=BehaviorKind.PROCESS_START,
+                pid=31337,
+                process="cmd.exe",
+                cmdline="vssadmin delete shadows /all /quiet",
+            )
+        )
+        for i in range(40):
+            harness.behavior.observe(
+                BehaviorEvent(
+                    kind=BehaviorKind.FILE_MODIFY,
+                    path=f"/home/u/docs/f{i}.dat",
+                    pid=31337,
+                    process="cmd.exe",
+                    size=4_096,
+                    entropy=5.0,
+                )
+            )
+        verdict = harness.behavior.verdict_for(31337)
+        assert verdict.severity in (Severity.HIGH, Severity.CRITICAL), verdict.score
+
+        assert monitor.drain_once() == 0          # still zero files
+        actions = [
+            e
+            for e in bus.history(types={EventType.ACTION_TAKEN})
+            if e.payload.get("pid") == 31337
+        ]
+        assert actions, "werdykt procesowy nie dotarł do modułu reakcji"
+        assert actions[0].payload["action"] == "report"   # default behavior_action
+        assert monitor.status()["actions"] >= 1
     finally:
         harness.stop()
 
@@ -591,7 +639,7 @@ def test_integration_with_the_real_scanner(config, bus):
         scanner, config, bus, vault, behavior, responder, backend="polling"
     )
     try:
-        monitor.start()
+        monitor.start(background=False)
         path = os.path.join(config.realtime_paths[0], "eicar.com")
         with open(path, "wb") as fh:
             fh.write(EICAR)

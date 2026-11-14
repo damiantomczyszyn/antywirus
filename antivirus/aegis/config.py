@@ -88,6 +88,9 @@ class Config:
     realtime_action: ActionKind = ActionKind.QUARANTINE
     realtime_debounce_ms: int = 400
     realtime_min_severity: str = "medium"       # act at or above this severity
+    #: Bounded intake queue. On overflow the monitor drops and counts events
+    #: rather than growing without limit under a filesystem flood.
+    realtime_queue_size: int = 2048
 
     # --- behaviour monitoring ---
     behavior_enabled: bool = True
@@ -95,8 +98,25 @@ class Config:
     behavior_window_sec: float = 20.0
     behavior_mass_ops_threshold: int = 25
     behavior_entropy_threshold: float = 7.2
+    #: Process names exempt from the *bulk* rules only - a compiler, installer
+    #: or archiver legitimately writes hundreds of files a second. Empty means
+    #: "use the built-in list" (see realtime.behavior.BENIGN_PROCESS_NAMES).
+    #: A name is trivially spoofed, so an allowlisted process is still not
+    #: permitted to encrypt files in place or drop ransom notes.
+    behavior_allowlist: list[str] = field(default_factory=list)
+    #: Seconds before the same rule may fire again for the same actor.
+    #: 0 means "use the per-rule defaults" (30-120 s depending on the rule).
+    behavior_cooldown_sec: float = 0.0
+    #: In-place high-entropy rewrites required before encrypt_in_place fires.
+    behavior_encrypt_min_hits: int = 3
+    # NOTE: there is deliberately no `behavior_min_severity` here. The floor for
+    # killing a process is HIGH, raised further if realtime_min_severity is
+    # stricter; exposing it as a setting could only lower that floor, and
+    # terminating a process destroys the user's work in progress.
     procmon_enabled: bool = True
     procmon_interval_sec: float = 2.0
+    #: Seconds a process gets to exit after SIGTERM before SIGKILL.
+    kill_grace_sec: float = 1.5
 
     # --- threat intel ---
     # Only feeds that actually serve data anonymously, verified 2026-11-14.

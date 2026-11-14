@@ -533,12 +533,23 @@ class Responder:
 
     @staticmethod
     def _process_exists(pid: int) -> bool:
+        """True when *pid* is a live process.
+
+        A zombie counts as gone: it has already stopped executing and only
+        waits to be reaped, so reporting it as a survivor would make a
+        successful kill look like a failure.  ``os.kill(pid, 0)`` happily
+        succeeds for zombies, which is exactly the trap here.
+        """
         if pid <= 0:
             return False
         if HAVE_PSUTIL:
             try:
-                return psutil.pid_exists(pid)
-            except Exception:  # noqa: BLE001
+                return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+            except psutil.NoSuchProcess:
+                return False
+            except psutil.AccessDenied:
+                return True
+            except Exception:  # noqa: BLE001 - fall through to the POSIX probe
                 pass
         try:
             os.kill(pid, 0)
@@ -548,7 +559,17 @@ class Responder:
             return True
         except OSError:
             return False
-        return True
+        return not Responder._is_zombie(pid)
+
+    @staticmethod
+    def _is_zombie(pid: int) -> bool:
+        try:
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                raw = fh.read()
+            state = raw[raw.rindex(b")") + 2 :].split()[0]
+        except (OSError, ValueError, IndexError):
+            return False
+        return state == b"Z"
 
     @staticmethod
     def _process_name(pid: int) -> str:

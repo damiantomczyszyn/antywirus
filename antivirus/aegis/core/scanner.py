@@ -67,7 +67,7 @@ CACHE_MAX_ENTRIES = 20_000
 # GUI and the CLI report, hence Polish.
 _SKIP_SYMLINK = "link symboliczny"
 _SKIP_INTERNAL = "dane robocze Aegis"
-_SKIP_EXCLUDED = "wykluczony z skanowania"
+_SKIP_EXCLUDED = "wykluczony ze skanowania"
 _SKIP_TOO_BIG = "plik zbyt duży"
 _SKIP_NOT_FILE = "nie jest zwykłym plikiem"
 _SKIP_ERROR = "błąd odczytu"

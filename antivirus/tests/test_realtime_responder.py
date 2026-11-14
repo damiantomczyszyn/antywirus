@@ -514,3 +514,39 @@ def test_set_scanner_and_stats(config, bus, tmp_path):
 def test_psutil_backend_is_the_one_in_use():
     """Documents which backend this run exercised."""
     assert HAVE_PSUTIL is True
+
+
+# --------------------------------------------------------------------------
+# The psutil-free fallback path (psutil is installed here, so force it off)
+# --------------------------------------------------------------------------
+def test_self_protection_without_psutil(config, bus, monkeypatch):
+    monkeypatch.setattr("aegis.realtime.responder.HAVE_PSUTIL", False)
+    responder = Responder(config, bus, FakeQuarantine(config))
+
+    ancestors = responder._own_ancestors()           # noqa: SLF001
+    assert os.getppid() in ancestors
+    assert 1 in ancestors
+    assert not responder.kill_process_tree(1).ok
+    assert not responder.kill_process_tree(os.getpid()).ok
+    assert not responder.kill_process_tree(os.getppid()).ok
+    assert not responder.kill_process_tree(4_000_000).ok
+
+
+def test_os_kill_fallback_terminates_the_tree(config, bus, monkeypatch, spawn):
+    monkeypatch.setattr("aegis.realtime.responder.HAVE_PSUTIL", False)
+    parent = spawn(("sh", "-c", "sleep 30 & sleep 30"))
+    deadline = time.monotonic() + 5.0
+    children: list[int] = []
+    while time.monotonic() < deadline and not children:
+        children = _children_of(parent.pid)
+    assert children
+
+    responder = Responder(config, bus, FakeQuarantine(config))
+    result = responder.kill_process_tree(parent.pid)
+
+    assert result.ok, result.detail
+    parent.wait(timeout=5)
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and any(alive(pid) for pid in children):
+        time.sleep(0.02)
+    assert not any(alive(pid) for pid in children)

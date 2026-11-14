@@ -251,28 +251,16 @@ def _fmt_size(size: int | float | None) -> str:
 
 
 def detection_from_dict(data: dict[str, Any]) -> Detection | None:
-    """Rebuild a :class:`Detection` from its ``to_dict()`` form.
+    """Rebuild a :class:`Detection` from its ``to_dict()`` form, or None.
 
-    Needed because quarantine entries and bus payloads carry detections as
-    plain dictionaries, while :func:`aegis.engine.verdict.explain` wants
-    objects.
+    Thin wrapper over :meth:`aegis.models.Detection.from_dict` that swallows
+    malformed input: quarantine entries and bus payloads carry detections as
+    plain dictionaries, and a corrupt one must not take the window down.
     """
     if not isinstance(data, dict):
         return None
     try:
-        indicator = data.get("indicator")
-        return Detection(
-            layer=DetectionLayer(data.get("layer", DetectionLayer.HEURISTIC)),
-            rule=str(data.get("rule", "?")),
-            threat_name=str(data.get("threat_name", "")),
-            score=float(data.get("score", 0.0) or 0.0),
-            confidence=float(data.get("confidence", 1.0)),
-            detail=str(data.get("detail", "") or ""),
-            path=data.get("path"),
-            pid=data.get("pid"),
-            indicator=Indicator.from_dict(indicator) if isinstance(indicator, dict) else None,
-            timestamp=float(data.get("timestamp", 0.0) or time.time()),
-        )
+        return Detection.from_dict(data)
     except Exception:  # noqa: BLE001 - malformed payloads are not fatal
         return None
 
@@ -996,6 +984,9 @@ class AegisController:
         for raw in paths:
             if _safe_bool(getattr(token, "cancelled", False)):
                 return (total or None), True
+            if total >= cap or time.monotonic() > deadline:
+                truncated = True
+                break
             try:
                 if os.path.isfile(raw):
                     total += 1
@@ -1016,6 +1007,13 @@ class AegisController:
                 try:
                     with os.scandir(current) as entries:
                         for entry in entries:
+                            # The cap has to bite inside a single huge directory
+                            # too, otherwise one folder with a million files
+                            # blows the whole budget.
+                            if total >= cap or time.monotonic() > deadline:
+                                truncated = True
+                                stack.clear()
+                                break
                             try:
                                 if entry.is_dir(follow_symlinks=False):
                                     if not recursive or entry.name in excluded:

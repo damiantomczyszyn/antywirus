@@ -252,8 +252,14 @@ class RealtimeMonitor:
 
     @property
     def is_running(self) -> bool:
+        if self._stop.is_set():
+            return False
         thread = self._thread
-        return bool(thread and thread.is_alive() and not self._stop.is_set())
+        if thread is not None and thread.is_alive():
+            return True
+        # Manual-pump mode (``start(background=False)``): no drain thread, but
+        # the backend is armed and the watched paths are live.
+        return bool(self._paths) and (self._observer is not None or self._backend == "polling")
 
     @property
     def paths(self) -> list[str]:
@@ -282,8 +288,15 @@ class RealtimeMonitor:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-    def start(self, paths: Sequence[str] | None = None) -> None:
-        """Begin watching *paths* (default: ``config.realtime_paths``)."""
+    def start(self, paths: Sequence[str] | None = None, *, background: bool = True) -> None:
+        """Begin watching *paths* (default: ``config.realtime_paths``).
+
+        With ``background=False`` the backend is armed but no drain thread is
+        started, so the caller owns the pump and must call :meth:`drain_once`
+        itself.  That is what the tests use: a background thread racing an
+        explicit ``drain_once()`` would make the processed counts
+        non-deterministic.
+        """
         if self.is_running:
             return
         wanted = list(paths) if paths else list(self._config.realtime_paths)
@@ -320,9 +333,10 @@ class RealtimeMonitor:
         if self._backend == "polling":
             self._poll_filesystem()  # prime: existing files are not "changes"
 
-        thread = threading.Thread(target=self._loop, name="aegis-realtime", daemon=True)
-        self._thread = thread
-        thread.start()
+        if background:
+            thread = threading.Thread(target=self._loop, name="aegis-realtime", daemon=True)
+            self._thread = thread
+            thread.start()
 
         self._publish(
             EventType.REALTIME_STARTED,
@@ -492,22 +506,23 @@ class RealtimeMonitor:
                     self._pending.pop(item.path, None)
 
         handled = 0
-        fired_behaviour = False
         for item in ready:
             try:
-                processed, fired = self._process(item, debounce)
+                processed, _fired = self._process(item, debounce)
             except Exception as exc:  # noqa: BLE001 - one bad file is not fatal
                 with self._lock:
                     self._counters["errors"] += 1
                 self._log(f"Błąd przetwarzania {item.path}: {exc}", level="error")
                 continue
             handled += int(processed)
-            fired_behaviour = fired_behaviour or fired
 
         with self._lock:
             self._counters["processed"] += handled
-        if fired_behaviour:
-            self._check_process_threats()
+        # Unconditionally, even when no file changed: an actor can also escalate
+        # on evidence from the process monitor (a shadow-copy command line, a
+        # blocklisted connection), and ProcessMonitor has no responder of its
+        # own by contract.
+        self._check_process_threats()
         return handled
 
     def _process(self, item: _Pending, debounce: float) -> tuple[bool, bool]:
@@ -657,6 +672,8 @@ class RealtimeMonitor:
                 last_ts, last_score = last
                 if now - last_ts < _PROCESS_ACTION_COOLDOWN and verdict.score <= last_score:
                     continue
+            if len(self._handled_actors) > 512:
+                self._handled_actors.clear()
             self._handled_actors[verdict.pid] = (now, verdict.score)
             try:
                 results = self._responder.handle_process_threat(verdict)

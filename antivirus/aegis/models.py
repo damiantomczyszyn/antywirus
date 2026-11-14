@@ -259,6 +259,31 @@ class Detection:
         }
 
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Detection":
+        """Rebuild a Detection from :meth:`to_dict`.
+
+        Bus payloads and quarantine metadata store detections as plain dicts,
+        but :func:`aegis.engine.verdict.explain` needs objects - so the round
+        trip has to exist here rather than being reinvented per consumer.
+        Unknown keys are ignored and missing ones fall back to defaults, so a
+        payload written by an older version still loads.
+        """
+        indicator = data.get("indicator")
+        return cls(
+            layer=DetectionLayer(data.get("layer", DetectionLayer.HEURISTIC)),
+            rule=data.get("rule", "unknown"),
+            threat_name=data.get("threat_name", ""),
+            score=float(data.get("score", 0.0) or 0.0),
+            confidence=float(data.get("confidence", 1.0) or 0.0),
+            detail=data.get("detail", ""),
+            path=data.get("path"),
+            pid=data.get("pid"),
+            indicator=Indicator.from_dict(indicator) if isinstance(indicator, dict) else None,
+            timestamp=float(data.get("timestamp", 0.0) or 0.0) or time.time(),
+        )
+
+
 @dataclass(slots=True)
 class FileVerdict:
     """Result of analysing one file."""
@@ -301,6 +326,30 @@ class FileVerdict:
             "error": self.error,
             "skipped": self.skipped,
         }
+
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "FileVerdict":
+        """Rebuild a FileVerdict from :meth:`to_dict`.
+
+        ``threat_name`` is intentionally not restored: it is derived from the
+        detections, so storing and reloading it could contradict them.
+        """
+        return cls(
+            path=data.get("path", ""),
+            size=int(data.get("size", 0) or 0),
+            sha256=data.get("sha256", ""),
+            md5=data.get("md5", ""),
+            score=float(data.get("score", 0.0) or 0.0),
+            severity=Severity(data.get("severity", Severity.CLEAN)),
+            detections=[
+                Detection.from_dict(d) for d in data.get("detections", ()) if isinstance(d, dict)
+            ],
+            scanned_at=float(data.get("scanned_at", 0.0) or 0.0) or time.time(),
+            duration_ms=float(data.get("duration_ms", 0.0) or 0.0),
+            error=data.get("error"),
+            skipped=data.get("skipped"),
+        )
 
 
 @dataclass(slots=True)

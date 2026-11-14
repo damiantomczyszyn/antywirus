@@ -834,26 +834,31 @@ def _rule_script_obfuscation(facts: _FileFacts) -> list[Detection]:
         return []
     text = facts.text
     low = text.lower()
-    signals: list[str] = []
+    # "primary" signals mean something was encoded on purpose; the others are
+    # only supporting evidence (minified code and ASCII art have long lines
+    # too), so they never fire the rule on their own.
+    primary: list[str] = []
+    supporting: list[str] = []
 
     if _blob_like(_RE_BASE64_BLOB.search(text), 16):
-        signals.append("długi blok base64")
+        primary.append("długi blok base64")
     elif _blob_like(_RE_HEX_BLOB.search(text), 8):
         # A hex blob also matches the base64 character class, so only one of the
         # two ever counts - otherwise a single blob would score twice.
-        signals.append("długi blok szesnastkowy")
+        primary.append("długi blok szesnastkowy")
     found_exec = [needle for needle in _DECODE_EXEC if needle in low]
     if found_exec:
-        signals.append(f"wykonanie zdekodowanego kodu ({found_exec[0]})")
+        primary.append(f"wykonanie zdekodowanego kodu ({found_exec[0]})")
     if len(_RE_CHARCODE.findall(text)) >= 12 or len(_RE_ESCAPES.findall(text)) >= 80:
-        signals.append("budowanie tekstu z kodów znaków / sekwencji ucieczki")
+        primary.append("budowanie tekstu z kodów znaków / sekwencji ucieczki")
     longest = max((len(line) for line in facts.lines), default=0)
     if longest >= 2000:
-        signals.append(f"bardzo długa linia ({longest} znaków)")
+        supporting.append(f"bardzo długa linia ({longest} znaków)")
     if facts.printable_ratio < 0.85:
-        signals.append(f"tylko {facts.printable_ratio * 100:.0f}% znaków drukowalnych")
+        supporting.append(f"tylko {facts.printable_ratio * 100:.0f}% znaków drukowalnych")
 
-    if not signals:
+    signals = primary + supporting
+    if not primary and len(signals) < 2:
         return []
     score, confidence = _scale(
         len(signals), (12.0, 0.5), (18.0, 0.7), (24.0, 0.85), (_STRONG, 0.95)

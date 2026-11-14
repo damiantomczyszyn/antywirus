@@ -144,7 +144,9 @@ class AegisApp:
 
         self._closing = False
         self._dashboard: dict[str, Any] = {}
-        self._after_ids: list[Any] = []
+        # One pending ``after`` id per repeating timer.  A plain list would grow
+        # by one entry every 100 ms for as long as the window is open.
+        self._after_ids: dict[str, Any] = {}
         self._progress_indeterminate = False
         self._update_progress_running = False
         self._log_lines = 0
@@ -169,10 +171,12 @@ class AegisApp:
     # Infrastructure
     # ==================================================================
     def _schedule(self, delay: int, callback: Callable[[], None]) -> None:
+        """(Re)arm one named timer.  Keyed so ids cannot accumulate."""
         if self._closing:
             return
+        key = getattr(callback, "__name__", repr(callback))
         try:
-            self._after_ids.append(self.root.after(delay, callback))
+            self._after_ids[key] = self.root.after(delay, callback)
         except Exception as exc:  # noqa: BLE001
             self._note_error("after", exc)
 
@@ -207,7 +211,13 @@ class AegisApp:
         self._guard("protocol", self.root.protocol, "WM_DELETE_WINDOW", self.on_close)
 
         self.style = ttk.Style(self.root)
-        for theme in ("clam", "vista", "aqua", "default"):
+        if sys.platform == "win32":  # pragma: no cover - platform dependent
+            preferred = ("vista", "winnative", "clam", "default")
+        elif sys.platform == "darwin":  # pragma: no cover - platform dependent
+            preferred = ("aqua", "clam", "default")
+        else:
+            preferred = ("clam", "default")
+        for theme in preferred:
             try:
                 self.style.theme_use(theme)
                 break
@@ -1332,7 +1342,7 @@ class AegisApp:
         ):
             return
         self._closing = True
-        for after_id in self._after_ids:
+        for after_id in list(self._after_ids.values()):
             try:
                 self.root.after_cancel(after_id)
             except Exception:  # noqa: BLE001 - an expired id is harmless
@@ -1356,6 +1366,19 @@ class AegisApp:
 # --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
+def _load_config(data_dir: str | None) -> Config:
+    """Load settings, honouring ``--data-dir`` (never the real ~/.aegis then)."""
+    if not data_dir:
+        return Config.load()
+    root = Path(data_dir).expanduser()
+    candidate = root / "config.json"
+    if candidate.is_file():
+        config = Config.load(candidate)
+        config.data_dir = root
+        return config
+    return Config(data_dir=root)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="run_gui.py", description="Aegis AV — okno programu", add_help=True
@@ -1371,8 +1394,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             sys.stderr.write(f"\nSzczegóły techniczne: {_TK_IMPORT_ERROR}\n")
         return 2
 
-    config = Config(data_dir=Path(args.data_dir).expanduser()) if args.data_dir else Config.load()
-    controller = AegisController(config)
+    controller = AegisController(_load_config(args.data_dir))
     try:
         app = AegisApp(controller)
     except tk.TclError as exc:  # pragma: no cover - needs a display-less Tk
