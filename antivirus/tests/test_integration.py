@@ -403,3 +403,61 @@ def test_responder_does_not_wait_forever_on_an_unkillable_process(stack, monkeyp
     assert not result.ok
     assert "uprawnie" in result.detail.lower(), result.detail
     assert elapsed < 2.0, f"czekał {elapsed:.1f}s na procesie bez uprawnień"
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "fork"), reason="wymaga fork()")
+def test_zombie_is_not_counted_as_a_surviving_process(stack):
+    """A zombie has already died; reporting it as a survivor inverts the verdict.
+
+    psutil.wait_procs() cannot reap a process that is not our own child, so a
+    killed grandchild whose parent does not reap it stays visible as a zombie.
+    Counting that as a survivor made a successful kill report as a failure -
+    the same defect the POSIX path had, in the other backend.
+    """
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    psutil = pytest.importorskip("psutil")
+
+    # A parent that forks a child and deliberately never wait()s for it.
+    source = textwrap.dedent(
+        """
+        import os, signal, time
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        pid = os.fork()
+        if pid == 0:
+            time.sleep(300)
+            os._exit(0)
+        print(pid, flush=True)
+        time.sleep(300)
+        """
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", source], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert parent.stdout is not None
+        child_pid = int(parent.stdout.readline().strip())
+        os.kill(child_pid, 9)
+
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                if psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE:
+                    break
+            except psutil.NoSuchProcess:
+                pytest.skip("dziecko zostało zebrane przez kogoś innego")
+            time.sleep(0.05)
+        else:
+            pytest.skip("nie udało się wytworzyć zombie w tym środowisku")
+
+        responder = stack["responder"]
+        assert responder._process_exists(child_pid) is False
+        killed, survivors, denied = responder._kill_psutil([child_pid], 0.5)
+        assert killed == 1, f"killed={killed} survivors={survivors} denied={denied}"
+        assert not survivors
+    finally:
+        parent.kill()
+        parent.wait(timeout=10)

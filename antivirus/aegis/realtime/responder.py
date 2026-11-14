@@ -450,6 +450,16 @@ class Responder:
             except psutil.AccessDenied:
                 denied.add(proc.pid)
         gone, alive = psutil.wait_procs(procs, timeout=grace)
+
+        # A zombie has already stopped executing; it lingers only until its
+        # parent reaps it, and psutil.wait_procs() cannot reap a process that
+        # is not our own child. Counting one as a survivor reports a
+        # successful kill as a failure - the same user-visible bug the POSIX
+        # path had - and would also waste the whole grace period a second time
+        # waiting for something that will never disappear. _process_exists()
+        # is the single source of truth here, and it treats a zombie as gone.
+        alive = [proc for proc in alive if self._process_exists(proc.pid)]
+
         for proc in alive:
             try:
                 proc.kill()
@@ -457,9 +467,10 @@ class Responder:
                 continue
             except psutil.AccessDenied:
                 denied.add(proc.pid)
-        gone2, alive2 = psutil.wait_procs(alive, timeout=grace)
-        killed = len(gone) + len(gone2)
-        return killed, {p.pid for p in alive2}, denied
+        _gone2, alive2 = psutil.wait_procs(alive, timeout=grace)
+        survivors = {proc.pid for proc in alive2 if self._process_exists(proc.pid)}
+        killed = len([pid for pid in tree if pid not in survivors and pid not in denied])
+        return killed, survivors, denied
 
     def _kill_posix(
         self, tree: Sequence[int], grace: float
