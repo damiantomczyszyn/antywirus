@@ -277,22 +277,6 @@ class Quarantine:
                     detail=f"Zapis do skarbca nie udał się: {exc.strerror or exc}",
                 )
 
-            # Only now remove the original: if the unlink fails the vault copy
-            # is rolled back, so a file is never both live and quarantined.
-            try:
-                os.unlink(source)
-            except OSError as exc:
-                try:
-                    os.unlink(vault_path)
-                except OSError:  # pragma: no cover
-                    pass
-                return ActionResult(
-                    kind=ActionKind.QUARANTINE,
-                    target=target_label,
-                    ok=False,
-                    detail=f"Nie można usunąć oryginału: {exc.strerror or exc}",
-                )
-
             name = threat_name or (verdict.threat_name if verdict else "") or "Nieznane.Zagrozenie"
             entry = QuarantineEntry(
                 entry_id=entry_id,
@@ -306,8 +290,59 @@ class Quarantine:
                 detections=[d.to_dict() for d in verdict.detections] if verdict else [],
                 original_mode=stat.st_mode & 0o7777,
             )
-            self._load()[entry_id] = entry
-            self._save()
+
+            # Record the entry BEFORE removing the original. Doing it the other
+            # way round loses the user's file outright when the index write
+            # fails - a full disk is enough, and an antivirus runs precisely
+            # when the disk is under pressure: the original would be gone, the
+            # vault would hold an obfuscated blob, and with no index entry
+            # neither the window nor restore() could find it again.
+            #
+            # The cost of this order is a brief window where the file is both
+            # live and listed. That is strictly the better failure: it is
+            # visible to the user, and restore() refuses to overwrite an
+            # existing file, so nothing is silently clobbered.
+            index = self._load()
+            index[entry_id] = entry
+            try:
+                self._save()
+            except (OSError, ValueError, TypeError) as exc:
+                index.pop(entry_id, None)
+                try:
+                    os.unlink(vault_path)
+                except OSError:  # pragma: no cover - best-effort cleanup
+                    pass
+                return ActionResult(
+                    kind=ActionKind.QUARANTINE,
+                    target=target_label,
+                    ok=False,
+                    detail=(
+                        "Nie udało się zapisać indeksu kwarantanny "
+                        f"({exc.strerror if isinstance(exc, OSError) else exc}); "
+                        "oryginał pozostawiony nietknięty."
+                    ),
+                )
+
+            try:
+                os.unlink(source)
+            except OSError as exc:
+                # Roll the whole operation back so the file is not listed as
+                # quarantined while still sitting on disk.
+                index.pop(entry_id, None)
+                try:
+                    self._save()
+                except (OSError, ValueError, TypeError):  # pragma: no cover
+                    pass
+                try:
+                    os.unlink(vault_path)
+                except OSError:  # pragma: no cover
+                    pass
+                return ActionResult(
+                    kind=ActionKind.QUARANTINE,
+                    target=target_label,
+                    ok=False,
+                    detail=f"Nie można usunąć oryginału: {exc.strerror or exc}",
+                )
 
         self._publish(
             EventType.ACTION_TAKEN,

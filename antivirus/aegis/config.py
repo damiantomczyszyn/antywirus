@@ -119,23 +119,30 @@ class Config:
     kill_grace_sec: float = 1.5
 
     # --- threat intel ---
-    # Only feeds that actually serve data anonymously, verified 2026-11-14.
+    # Feeds that serve data anonymously AND are safe to enable unattended,
+    # verified against the live endpoints on 2026-11-14. This list is the
+    # authoritative one - it must agree with each FeedSpec.enabled_by_default,
+    # or the feed table in the GUI will describe a default that is not real.
+    #
     # Deliberately NOT here:
-    #   malwarebazaar_recent / urlhaus_online / threatfox_iocs - abuse.ch
-    #     retired its anonymous bulk exports (HTTP 410 Gone); the replacements
-    #     live on *-api.abuse.ch and need a free Auth-Key, so enabling them by
-    #     default would only produce warnings on a fresh install.
+    #   feodo_aggressive - 7607 addresses instead of 5, but it includes
+    #     offline and historical C2 addresses, and an address that has since
+    #     been reassigned to a legitimate service would be reported as a hit.
+    #     One click in Settings turns it on; the description states the trade.
+    #   malwarebazaar_* / urlhaus_online / threatfox_recent - abuse.ch retired
+    #     its anonymous bulk exports (HTTP 410 Gone); the replacements live on
+    #     *-api.abuse.ch and need a free Auth-Key, so enabling them by default
+    #     would only produce "needs a key" warnings on a fresh install.
     #   sslbl_ipblocklist - upstream deprecated it on 2025-01-03; it still
-    #     returns 200 but the body is a header and zero addresses.
-    #   sslbl_certs - TLS certificate fingerprints, not file hashes; they can
-    #     never match file content, so they would just pollute the hash space.
+    #     answers 200 but the body is a header and zero addresses.
+    #   sslbl_certs - TLS certificate fingerprints, not file hashes. They can
+    #     never match file content, so they would only pollute the hash space.
     #   clamav_daily - large download, and Cloudflare blocks some egress.
-    # Add any of them in Settings (and a key via feed_api_keys) to turn on.
     feeds_enabled: list[str] = field(
         default_factory=lambda: [
             "builtin",
+            "github_curated",
             "feodo_ipblocklist",
-            "feodo_aggressive",
         ]
     )
     feed_api_keys: dict[str, str] = field(default_factory=dict)

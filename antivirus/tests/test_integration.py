@@ -328,3 +328,204 @@ def test_controller_boots_and_reports_a_dashboard(tmp_path):
         assert result is not None and result.threats, "controller scan found nothing"
     finally:
         controller.shutdown()
+
+
+# ------------------------------------------------- responder teardown race
+def test_slow_process_teardown_is_still_reported_as_success(stack, monkeypatch):
+    """A kill that worked must not be reported as a failure.
+
+    SIGKILL is asynchronous, and a child whose parent was just killed has to be
+    reparented to init and reaped before it stops being visible. The POSIX
+    fallback used to sleep a fixed 50 ms and then count survivors, so on a
+    loaded machine a successful kill reported "zakończono 0 z 3 procesów" -
+    telling the user the response had failed at precisely the moment it
+    mattered. This drives that timing deterministically instead of hoping to
+    reproduce it under load.
+    """
+    import aegis.realtime.responder as responder_mod
+
+    responder = stack["responder"]
+    monkeypatch.setattr(responder_mod, "HAVE_PSUTIL", False)
+    # No SIGTERM grace, so the run goes straight to SIGKILL and the assertion
+    # lands on the post-kill reap wait, which is the code under test.
+    stack["cfg"].kill_grace_sec = 0.0
+
+    tree = [50001, 50002, 50003]
+    monkeypatch.setattr(responder, "_collect_tree", lambda pid, forbidden=(): list(tree))
+    monkeypatch.setattr(responder, "_process_name", lambda pid: "sim_ransom")
+    monkeypatch.setattr(responder, "_own_ancestors", lambda: {1})
+
+    signalled: list[tuple[int, int]] = []
+
+    def fake_kill(pid, sig):
+        signalled.append((pid, sig))
+
+    monkeypatch.setattr(responder_mod.os, "kill", fake_kill)
+
+    # Each pid looks alive for several polls after being signalled, then dies -
+    # i.e. the kernel takes longer than one fixed sleep to tear it down.
+    polls: dict[int, int] = {pid: 0 for pid in tree}
+    linger = 8
+
+    def fake_exists(pid: int) -> bool:
+        polls[pid] = polls.get(pid, 0) + 1
+        return polls[pid] <= linger
+
+    monkeypatch.setattr(responder, "_process_exists", staticmethod(fake_exists))
+
+    result = responder.kill_process_tree(tree[0])
+
+    assert result.ok, result.detail
+    assert "zakończono 3 z 3" in result.detail, result.detail
+    assert {sig for _, sig in signalled} >= {responder_mod.signal.SIGKILL}
+
+
+def test_responder_does_not_wait_forever_on_an_unkillable_process(stack, monkeypatch):
+    """A pid we may not signal must not stall the response loop."""
+    import aegis.realtime.responder as responder_mod
+
+    responder = stack["responder"]
+    monkeypatch.setattr(responder_mod, "HAVE_PSUTIL", False)
+    monkeypatch.setattr(responder, "_collect_tree", lambda pid, forbidden=(): [60001])
+    monkeypatch.setattr(responder, "_process_name", lambda pid: "stubborn")
+    monkeypatch.setattr(responder, "_own_ancestors", lambda: {1})
+    monkeypatch.setattr(responder, "_process_exists", staticmethod(lambda pid: True))
+
+    def denied_kill(pid, sig):
+        raise PermissionError(pid)
+
+    monkeypatch.setattr(responder_mod.os, "kill", denied_kill)
+
+    started = time.monotonic()
+    result = responder.kill_process_tree(60001)
+    elapsed = time.monotonic() - started
+
+    assert not result.ok
+    assert "uprawnie" in result.detail.lower(), result.detail
+    assert elapsed < 2.0, f"czekał {elapsed:.1f}s na procesie bez uprawnień"
+
+
+@pytest.mark.skipif(not hasattr(__import__("os"), "fork"), reason="wymaga fork()")
+def test_zombie_is_not_counted_as_a_surviving_process(stack):
+    """A zombie has already died; reporting it as a survivor inverts the verdict.
+
+    psutil.wait_procs() cannot reap a process that is not our own child, so a
+    killed grandchild whose parent does not reap it stays visible as a zombie.
+    Counting that as a survivor made a successful kill report as a failure -
+    the same defect the POSIX path had, in the other backend.
+    """
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    psutil = pytest.importorskip("psutil")
+
+    # A parent that forks a child and deliberately never wait()s for it.
+    source = textwrap.dedent(
+        """
+        import os, signal, time
+        signal.signal(signal.SIGCHLD, signal.SIG_DFL)
+        pid = os.fork()
+        if pid == 0:
+            time.sleep(300)
+            os._exit(0)
+        print(pid, flush=True)
+        time.sleep(300)
+        """
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", source], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert parent.stdout is not None
+        child_pid = int(parent.stdout.readline().strip())
+        os.kill(child_pid, 9)
+
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                if psutil.Process(child_pid).status() == psutil.STATUS_ZOMBIE:
+                    break
+            except psutil.NoSuchProcess:
+                pytest.skip("dziecko zostało zebrane przez kogoś innego")
+            time.sleep(0.05)
+        else:
+            pytest.skip("nie udało się wytworzyć zombie w tym środowisku")
+
+        responder = stack["responder"]
+        assert responder._process_exists(child_pid) is False
+        killed, survivors, denied = responder._kill_psutil([child_pid], 0.5)
+        assert killed == 1, f"killed={killed} survivors={survivors} denied={denied}"
+        assert not survivors
+    finally:
+        parent.kill()
+        parent.wait(timeout=10)
+
+
+# ------------------------------------------------- quarantine durability
+def test_index_write_failure_does_not_destroy_the_users_file(stack, tmp_path, monkeypatch):
+    """A full disk must not cost the user the file the antivirus was protecting.
+
+    quarantine() used to copy into the vault, unlink the original, and only
+    then persist the index. If that last write failed - ENOSPC is enough, and
+    an antivirus runs precisely when the disk is under pressure - the original
+    was gone, the vault held an obfuscated blob, and with no index entry
+    neither the window nor restore() could find it. The exception also escaped
+    quarantine() into the realtime response path.
+    """
+    quarantine = stack["quarantine"]
+    source = tmp_path / "praca" / "wazny.doc"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"TRESC UZYTKOWNIKA " * 200 + EICAR)
+    original = source.read_bytes()
+
+    def no_space(*_args, **_kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(quarantine, "_save", no_space)
+
+    result = quarantine.quarantine(source, threat_name="EICAR.Test.File")
+
+    assert not result.ok, "zgłosił sukces mimo awarii zapisu indeksu"
+    assert "indeks" in result.detail.lower()
+    assert source.is_file(), "oryginał użytkownika zniknął"
+    assert source.read_bytes() == original, "treść oryginału uszkodzona"
+
+    monkeypatch.undo()
+    leftovers = [
+        p.name
+        for p in stack["cfg"].quarantine_dir.iterdir()
+        if p.name not in ("index.json", "vault.key")
+    ]
+    assert not leftovers, f"osierocone pliki w skarbcu: {leftovers}"
+    assert not Quarantine(stack["cfg"]).list(), "wpis został utrwalony mimo awarii"
+
+
+def test_unlink_failure_rolls_the_entry_back(stack, tmp_path, monkeypatch):
+    """A file must never be listed as quarantined while still sitting on disk."""
+    import aegis.core.quarantine as quarantine_mod
+
+    quarantine = stack["quarantine"]
+    source = tmp_path / "praca" / "zablokowany.doc"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"ZAWARTOSC " * 50 + EICAR)
+    original = source.read_bytes()
+
+    real_unlink = quarantine_mod.os.unlink
+
+    def refuse_source(target, *args, **kwargs):
+        if str(target) == str(source):
+            raise OSError(13, "Permission denied")
+        return real_unlink(target, *args, **kwargs)
+
+    monkeypatch.setattr(quarantine_mod.os, "unlink", refuse_source)
+
+    result = quarantine.quarantine(source, threat_name="EICAR.Test.File")
+
+    assert not result.ok
+    assert "oryginał" in result.detail.lower()
+    assert source.read_bytes() == original
+
+    monkeypatch.undo()
+    assert not Quarantine(stack["cfg"]).list(), "wpis został po nieudanej kwarantannie"
