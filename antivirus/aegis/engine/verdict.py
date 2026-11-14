@@ -109,7 +109,7 @@ def explain(detections: Iterable[Detection]) -> str:
     """Human-readable breakdown, used by the GUI details pane and the CLI."""
     items = [d for d in detections if d.weighted > 0]
     if not items:
-        return "Brak przeslanek - obiekt czysty."
+        return "Brak przesłanek — obiekt czysty."
 
     by_layer: dict[DetectionLayer, list[Detection]] = {}
     for det in items:
@@ -125,7 +125,7 @@ def explain(detections: Iterable[Detection]) -> str:
         dets = by_layer.get(layer)
         if not dets:
             continue
-        lines.append(f"[{layer.value}] wklad warstwy: {_layer_score(dets, layer):.1f} pkt")
+        lines.append(f"[{layer.value}] wkład warstwy: {_layer_score(dets, layer):.1f} pkt")
         for det in sorted(dets, key=lambda d: d.weighted, reverse=True):
             detail = f" - {det.detail}" if det.detail else ""
             lines.append(
@@ -136,7 +136,7 @@ def explain(detections: Iterable[Detection]) -> str:
     score, severity = fuse(items)
     if len(by_layer) > 1:
         lines.append(
-            f"Premia za zgodnosc {len(by_layer)} warstw: "
+            f"Premia za zgodność {len(by_layer)} warstw: "
             f"x{1.0 + CORROBORATION_BONUS * (len(by_layer) - 1):.2f}"
         )
     lines.append(f"WYNIK: {score:.1f}/100 -> {severity.value.upper()}")

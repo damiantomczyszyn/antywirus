@@ -1,0 +1,19 @@
+# Aegis AV runtime dependencies.
+#
+# The product is deliberately usable with NOTHING installed beyond CPython 3.10+:
+# every import below is optional and has a working fallback. Install them anyway
+# for proper realtime protection.
+
+# Kernel-level filesystem events (inotify / FSEvents / ReadDirectoryChangesW).
+# Without it the realtime monitor falls back to directory polling, which works
+# but is slower and misses very short-lived files.
+watchdog>=3.0.0
+
+# Process and network-connection enumeration for the behaviour monitor, and
+# reliable process-tree termination for the responder. Without it Aegis reads
+# /proc on Linux and disables process monitoring elsewhere.
+psutil>=5.9.0
+
+# GUI note: Tkinter is part of the Python standard library on Windows and macOS.
+# On Debian/Ubuntu it is a separate OS package:
+#     sudo apt install python3-tk
