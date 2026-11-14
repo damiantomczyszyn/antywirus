@@ -166,15 +166,33 @@ cd malware-sim && python3 -m simulator clean --sandbox /tmp/lab
 
 ## Baza wirusów
 
-Aegis wozi ze sobą małą bazę startową (EICAR, markery symulatora, kilka
-generycznych wzorców złośliwych skryptów), więc coś wykryje od razu po
-instalacji. Resztę dociąga z otwartych źródeł — m.in. MalwareBazaar, URLhaus,
-Feodo Tracker i SSL Blacklist (abuse.ch) oraz opcjonalnie baza ClamAV.
-Szczegóły, limity i to które źródła wymagają darmowego klucza API: zakładka
-*Baza wirusów* w GUI albo `python3 -m aegis update --help`.
+Aegis wozi ze sobą małą bazę startową (EICAR po trzech skrótach plus wzorzec
+na samą treść, markery symulatora, kilka generycznych wzorców złośliwych
+skryptów), więc coś wykryje od razu po instalacji, bez sieci.
+
+Resztę dociąga z otwartych źródeł. **Stan sprawdzony na żywo 2026-11-14**, bo
+krajobraz się zmienił i warto wiedzieć, co naprawdę działa:
+
+| źródło | domyślnie | stan |
+|---|---|---|
+| baza wbudowana | ✅ ON | 18 wskaźników, offline |
+| `github_curated` | ✅ ON | baza startowa z tego repo przez HTTPS |
+| Feodo Tracker (lista zalecana) | ✅ ON | **działa anonimowo**, 5 aktywnych C2 z nazwami rodzin (Emotet, QakBot) |
+| Feodo Tracker (lista agresywna) | ⬜ OFF | działa, **7607** adresów — ale zawiera adresy offline i historyczne, a przepisany komuś innemu adres zgłosi się jako trafienie. Jeden klik w *Ustawieniach* |
+| MalwareBazaar, URLhaus, ThreatFox | 🔑 klucz | abuse.ch **wycofał anonimowe eksporty masowe** (HTTP 410); zastępniki na `*-api.abuse.ch` wymagają darmowego `Auth-Key` |
+| SSL Blacklist (lista IP) | ⬜ OFF | formalnie **wygaszona 2025-01-03** — odpowiada 200, ale w treści zero adresów |
+| SSL Blacklist (certyfikaty) | ⬜ OFF | działa i jest świeża, ale to odciski **certyfikatów TLS**, nie plików — nigdy nie dopasują się do zawartości pliku |
+| ClamAV (`daily.cvd`) | ⬜ OFF | parser napisany i przetestowany na pliku syntetycznym, **nie na prawdziwych bajtach** — Cloudflare blokuje pobranie z części sieci |
+
+Parsery do wszystkich tych źródeł są w repo i przetestowane — wyłączone, nie
+brakujące. Klucz API wkleja się w zakładce *Baza wirusów* albo przez zmienną
+`AEGIS_<ID_ZRODLA>_KEY`.
 
 Aktualizacja używa `If-None-Match`/`If-Modified-Since`, więc drugie
-uruchomienie pod rząd kończy się na HTTP 304 i nie przepala łącza.
+uruchomienie pod rząd kończy się na HTTP 304 i nie przepala łącza. Limit
+bajtów jest pilnowany **w trakcie strumieniowania**, więc wrogi feed nie wypcha
+pamięci ani dysku, a błąd sieci nigdy nie leci wyjątkiem w górę — zamienia się
+w nieudany wynik dla tego jednego źródła.
 
 ## Testy
 
